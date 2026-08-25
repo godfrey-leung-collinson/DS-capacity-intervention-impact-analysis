@@ -1,0 +1,83 @@
+# Half-open periods: start <= timestamp < end. Keep pre/post durations equal
+# when comparing total PP visit volume; pp_visits_per_day is also reported.
+lounges:
+  - outlet_code: "BRS2"
+    intervention_date: "2026-07-01"
+    pre:
+      start: "2026-06-01"
+      end: "2026-07-01"    # Exclusive
+    post:
+      start: "2026-07-01"
+      end: "2026-08-01"    # Exclusive
+  - outlet_code: "EDI4"
+    intervention_date: "2026-07-01"
+    pre:
+      start: "2026-06-01"
+      end: "2026-07-01"    # Exclusive
+    post:
+      start: "2026-07-01"
+      end: "2026-08-01"    # Exclusive
+  - outlet_code: "MAN2"
+    intervention_date: "2026-07-01"
+    pre:
+      start: "2026-06-01"
+      end: "2026-07-01"    # Exclusive
+    post:
+      start: "2026-07-01"
+      end: "2026-08-01"    # Exclusive
+  - outlet_code: "MAN4"
+    intervention_date: "2026-07-01"
+    pre:
+      start: "2026-06-01"
+      end: "2026-07-01"    # Exclusive
+    post:
+      start: "2026-07-01"
+      end: "2026-08-01"    # Exclusive
+  - outlet_code: "STN5"
+    intervention_date: "2026-07-01"
+    pre:
+      start: "2026-06-01"
+      end: "2026-07-01"    # Exclusive
+    post:
+      start: "2026-07-01"
+      end: "2026-08-01"    # Exclusive
+
+metrics:
+  slot_minutes: 15
+  dwell_time_minutes: 60
+  max_allowed_seat_proportion: 0.70
+  forward_traffic_hours: 3
+  high_utilisation_threshold: 0.53
+
+  # "fixed" gives a like-for-like quadrant boundary. "pre_percentile" derives
+  # one rounded threshold from target-airport pre-period peaks and reuses it
+  # for both periods.
+  traffic_threshold_mode: "fixed"
+  high_traffic_threshold: 30
+  traffic_percentile: 70
+
+snowflake:
+  # true: local user-profile SSO (externalbrowser).
+  # false: non-human user via AWS Secrets Manager private-key credentials.
+  is_run_locally: true
+  account: "a7074875169861-prod.privatelink"
+  warehouse: "WH_GODFREY_LEUNG"
+  database: "STAGING_QUALITY"
+  secret_name: "prod-snowflake-nh-ml-platform"
+  region: "eu-west-1"
+  username_key: "USER"
+  privatekey_key: "PRIVATE_KEY"
+  passphrase_key: "PASSPHRASE"
+  warehouse_key: "WAREHOUSE"
+  query_tags:
+    project_tag:
+      name: "capacity_intervention_impact"
+      stage: "analysis"
+      environment: "dev"
+
+sql:
+  visit_extract: "SQL/extract_visits.sql"
+  flight_extract: "SQL/extract_flights.sql"
+
+output:
+  directory: "output"

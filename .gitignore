@@ -1,0 +1,16 @@
+.packages/
+.venv/
+.env
+.streamlit/secrets.toml
+app.zip
+__pycache__
+data/**
+output/**
+.DS_Store
+poetry.lock
+.pytest_cache/
+*.egg-info/
+
+reference_test_files/*
+
+dashboards/output/*
