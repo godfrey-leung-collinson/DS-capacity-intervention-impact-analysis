@@ -10,6 +10,7 @@ output/**
 poetry.lock
 .pytest_cache/
 *.egg-info/
+debug/*
 
 reference_test_files/*
 
