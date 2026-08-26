@@ -71,7 +71,38 @@ The command writes:
 - `output/period_metrics.csv`: one row per lounge and period
 - `output/intervention_impact.csv`: pre/post values, absolute and percentage
   changes, `quadrant_changed`, and `quadrant_transition`
+- `output/visits_extract.csv` and `output/flights_extract.csv`: cached raw
+  extracts used by the dashboard outlet view
 
 If seat capacity changed during the intervention, set
 `pre_number_of_seats` and `post_number_of_seats` for that lounge. Without
 overrides, the latest Partnership seat count is used for both periods.
+
+## Dashboard
+
+Interactive Streamlit dashboard for pre/post intervention comparison:
+
+```bash
+python -m pip install -e ".[dashboard]"
+streamlit run dashboards/app.py
+```
+
+By default the dashboard reads saved CSV outputs from `output/`. Use the sidebar
+to refresh from Snowflake (requires the same auth as the CLI). Tabs include an
+executive summary, metric heatmaps, pre/post bar charts, quadrant transitions,
+outlet-level utilisation time series and daily visit distributions, and a
+downloadable detail table.
+
+### Static HTML export
+
+Generate a standalone interactive HTML report (no Streamlit server required):
+
+```bash
+python scripts/export_dashboard_html.py
+python scripts/export_dashboard_html.py --output reports/my_report.html --open
+```
+
+The export embeds the same Plotly charts and searchable tables as the dashboard.
+Use `--plotly-js cdn` for a smaller file, or `--refresh-from-snowflake` to
+rebuild from live extracts. Outlet time-series panels require
+`output/visits_extract.csv` unless refreshing from Snowflake.
