@@ -13,6 +13,14 @@ from capacity_impact.data import extract_inputs
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """
+    Build the CLI argument parser.
+
+    Returns
+    -------
+    argparse.ArgumentParser
+        Parser configured with config and optional local CSV paths.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="config/analysis.yaml")
     parser.add_argument("--visits-csv", help="Use a local extract instead of Snowflake")
@@ -21,6 +29,24 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """
+    Run the intervention analysis and write CSV outputs.
+
+    Parameters
+    ----------
+    argv : list of str, optional
+        Command-line arguments. Defaults to ``sys.argv`` when omitted.
+
+    Returns
+    -------
+    int
+        Process exit code (0 on success).
+
+    Raises
+    ------
+    ValueError
+        If only one of ``--visits-csv`` or ``--flights-csv`` is supplied.
+    """
     args = build_parser().parse_args(argv)
     project_root = Path(__file__).resolve().parents[1]
     config_path = Path(args.config)
@@ -40,6 +66,8 @@ def main(argv: list[str] | None = None) -> int:
     config.output_directory.mkdir(parents=True, exist_ok=True)
     period_metrics.to_csv(config.output_directory / "period_metrics.csv", index=False)
     impact.to_csv(config.output_directory / "intervention_impact.csv", index=False)
+    visits.to_csv(config.output_directory / "visits_extract.csv", index=False)
+    flights.to_csv(config.output_directory / "flights_extract.csv", index=False)
     print(f"Wrote results to {config.output_directory}")
     return 0
 

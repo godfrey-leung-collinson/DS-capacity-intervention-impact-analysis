@@ -19,25 +19,83 @@ QUADRANT_LABELS = {
 
 
 def _require_columns(df: pd.DataFrame, required: set[str], name: str) -> None:
+    """
+    Validate that a DataFrame contains required columns.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Input frame to validate.
+    required : set of str
+        Required column names.
+    name : str
+        Dataset name used in error messages.
+
+    Raises
+    ------
+    DataMissing
+        If any required columns are missing.
+    """
     missing = required.difference(df.columns)
     if missing:
-        raise ValueError(f"{name} is missing columns: {', '.join(sorted(missing))}")
+        raise DataMissing(f"{name} is missing columns: {', '.join(sorted(missing))}")
 
 
 def _in_period(values: pd.Series, period: Period) -> pd.Series:
+    """
+    Return a boolean mask for timestamps within a half-open period.
+
+    Parameters
+    ----------
+    values : pandas.Series
+        Timestamp series.
+    period : Period
+        Half-open analysis window.
+
+    Returns
+    -------
+    pandas.Series
+        Boolean mask where ``period.start <= timestamp < period.end``.
+    """
     timestamps = pd.to_datetime(values)
     return timestamps.ge(period.start) & timestamps.lt(period.end)
 
 
-def compute_visit_metrics(
+def build_outlet_slot_frame(
     visits: pd.DataFrame,
     period: Period,
     settings: MetricSettings,
     *,
     outlet_code: str,
     number_of_seats: float | None = None,
-) -> dict[str, float]:
-    """Compute PP volume, occupancy, (PP) utilisation and weekly-peak proxy."""
+) -> pd.DataFrame:
+    """
+    Build slot-level visits, occupancy and utilisation for one outlet.
+
+    Parameters
+    ----------
+    visits : pandas.DataFrame
+        Visit extract.
+    period : Period
+        Half-open analysis window.
+    settings : MetricSettings
+        Metric calculation settings.
+    outlet_code : str
+        Outlet identifier.
+    number_of_seats : float or None, optional
+        Seat-count override for effective capacity.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Slot-level frame with occupancy and utilisation columns. Empty when
+        no visits exist for the outlet in the period.
+
+    Raises
+    ------
+    DataInvalid
+        If seat capacity cannot be resolved or is non-positive.
+    """
     _require_columns(
         visits,
         {"visit_interval", "outlet_code", "total_visits", "number_of_seats"},
@@ -51,15 +109,16 @@ def compute_visit_metrics(
         & _in_period(work["visit_interval"], period)
     ].copy()
     if work.empty:
-        return {
-            "pp_visit_volume": 0.0,
-            "avg_monthly_visits": 0.0,
-            "peak_pp_estimated_occupancy": np.nan,
-            "peak_pp_utilisation_rate": np.nan,
-            "estimated_pp_market_share": np.nan,
-            "number_of_seats": np.nan,
-            "effective_seat_capacity": np.nan,
-        }
+        return pd.DataFrame(
+            columns=[
+                "visit_interval",
+                "outlet_code",
+                "total_visits",
+                "number_of_seats",
+                "estimated_occupancy",
+                "pp_utilisation_rate",
+            ]
+        )
 
     work["visit_interval"] = pd.to_datetime(work["visit_interval"])
     work["total_visits"] = pd.to_numeric(work["total_visits"], errors="coerce").fillna(0)
@@ -68,11 +127,6 @@ def compute_visit_metrics(
         .agg(total_visits=("total_visits", "sum"), number_of_seats=("number_of_seats", "last"))
         .sort_values("visit_interval")
     )
-    observed_mondays = (
-        work["visit_interval"]
-        - pd.to_timedelta(work["visit_interval"].dt.weekday, unit="D")
-    ).dt.normalize().unique()
-    observed_months = work["visit_interval"].dt.to_period("M").unique()
 
     available_seats = pd.to_numeric(work["number_of_seats"], errors="coerce").dropna()
     if number_of_seats is None and available_seats.empty:
@@ -109,6 +163,72 @@ def compute_visit_metrics(
         work["total_visits"].rolling(rolling_slots, min_periods=1).sum()
     )
     work["pp_utilisation_rate"] = work["estimated_occupancy"] / effective_capacity
+    return work
+
+
+def compute_visit_metrics(
+    visits: pd.DataFrame,
+    period: Period,
+    settings: MetricSettings,
+    *,
+    outlet_code: str,
+    number_of_seats: float | None = None,
+) -> dict[str, float]:
+    """
+    Compute PP volume, occupancy, utilisation and weekly-peak proxy.
+
+    Parameters
+    ----------
+    visits : pandas.DataFrame
+        Visit extract.
+    period : Period
+        Half-open analysis window.
+    settings : MetricSettings
+        Metric calculation settings.
+    outlet_code : str
+        Outlet identifier.
+    number_of_seats : float or None, optional
+        Seat-count override for effective capacity.
+
+    Returns
+    -------
+    dict
+        Period-level visit, occupancy, utilisation and market-share proxy metrics.
+    """
+    code = outlet_code.strip().upper()
+    work = build_outlet_slot_frame(
+        visits,
+        period,
+        settings,
+        outlet_code=code,
+        number_of_seats=number_of_seats,
+    )
+    if work.empty:
+        return {
+            "pp_visit_volume": 0.0,
+            "avg_monthly_visits": 0.0,
+            "peak_pp_estimated_occupancy": np.nan,
+            "peak_pp_utilisation_rate": np.nan,
+            "average_pp_estimated_occupancy": np.nan,
+            "average_pp_utilisation_rate": np.nan,
+            "estimated_pp_market_share": np.nan,
+            "number_of_seats": np.nan,
+            "effective_seat_capacity": np.nan,
+        }
+
+    available_seats = pd.to_numeric(work["number_of_seats"], errors="coerce").dropna()
+    seats = (
+        float(number_of_seats)
+        if number_of_seats is not None
+        else float(available_seats.iloc[-1])
+    )
+    effective_capacity = seats * settings.max_allowed_seat_proportion
+
+    observed_mondays = (
+        work["visit_interval"]
+        - pd.to_timedelta(work["visit_interval"].dt.weekday, unit="D")
+    ).dt.normalize().unique()
+    observed_months = work["visit_interval"].dt.to_period("M").unique()
     monday = (
         work["visit_interval"]
         - pd.to_timedelta(work["visit_interval"].dt.weekday, unit="D")
@@ -143,7 +263,25 @@ def compute_airport_traffic_peak(
     *,
     airport_code: str,
 ) -> float:
-    """Compute peak departures in the configured forward-looking window."""
+    """
+    Compute peak forward departures in the configured traffic window.
+
+    Parameters
+    ----------
+    flights : pandas.DataFrame
+        Flight extract.
+    period : Period
+        Half-open analysis window.
+    settings : MetricSettings
+        Metric calculation settings.
+    airport_code : str
+        Airport identifier.
+
+    Returns
+    -------
+    float
+        Peak forward departure count, or ``NaN`` when no flight data exist.
+    """
     _require_columns(
         flights,
         {"flight_interval", "airport_code", "departure_flight_count"},
@@ -183,7 +321,26 @@ def compute_traffic_threshold(
     pre_traffic_peaks: pd.Series,
     settings: MetricSettings,
 ) -> float:
-    """Use one fixed baseline threshold for both pre and post classifications."""
+    """
+    Derive one traffic threshold reused for pre and post quadrant assignment.
+
+    Parameters
+    ----------
+    pre_traffic_peaks : pandas.Series
+        Pre-period airport traffic peaks across outlets.
+    settings : MetricSettings
+        Threshold mode and percentile settings.
+
+    Returns
+    -------
+    float
+        Traffic threshold value.
+
+    Raises
+    ------
+    DataMissing
+        If percentile mode is selected but no valid pre-period peaks exist.
+    """
     if settings.traffic_threshold_mode == "fixed":
         return float(settings.high_traffic_threshold)
     valid = pd.to_numeric(pre_traffic_peaks, errors="coerce")
@@ -199,7 +356,27 @@ def assign_quadrant(
     utilisation_threshold: float,
     traffic_threshold: float,
 ) -> tuple[str | None, str | None]:
-    """Return canonical category and display label, inclusive at thresholds."""
+    """
+    Assign a capacity quadrant from utilisation and traffic values.
+
+    Parameters
+    ----------
+    utilisation : float
+        Peak PP utilisation rate.
+    traffic : float
+        Airport traffic index.
+    utilisation_threshold : float
+        High-utilisation threshold (inclusive).
+    traffic_threshold : float
+        High-traffic threshold (inclusive).
+
+    Returns
+    -------
+    category : str or None
+        Canonical quadrant category key.
+    label : str or None
+        Human-readable quadrant label.
+    """
     if pd.isna(utilisation) or pd.isna(traffic):
         return None, None
     util_group = "high" if utilisation >= utilisation_threshold else "low"
@@ -209,5 +386,17 @@ def assign_quadrant(
 
 
 def period_days(period: Period) -> float:
-    """Duration used to normalise visit volume across unequal periods."""
+    """
+    Return period length in days for visit-volume normalisation.
+
+    Parameters
+    ----------
+    period : Period
+        Half-open analysis window.
+
+    Returns
+    -------
+    float
+        Period duration in days.
+    """
     return (period.end - period.start).total_seconds() / 86_400

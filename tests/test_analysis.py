@@ -1,6 +1,6 @@
 import pytest
 
-from capacity_impact.analysis import run_analysis
+from capacity_impact.analysis import CHANGE_METRICS, run_analysis
 
 
 def test_run_analysis_computes_deltas_and_quadrant_change(
@@ -22,6 +22,10 @@ def test_run_analysis_computes_deltas_and_quadrant_change(
     assert row["estimated_pp_market_share_delta"] == pytest.approx(20 / 70)
     assert bool(row["quadrant_changed"])
     assert row["quadrant_transition"] == "Low priority -> Capacity risk"
+    for metric in CHANGE_METRICS:
+        assert f"pre_{metric}" in impact.columns
+        assert f"post_{metric}" in impact.columns
+        assert f"{metric}_delta" in impact.columns
 
 
 def test_seat_overrides_capture_capacity_change(

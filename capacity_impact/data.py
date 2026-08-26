@@ -16,6 +16,19 @@ TOKEN_PATTERN = re.compile(r"\{\{\s*([a-z_]+)\s*\}\}")
 
 
 def _sql_string(value: str) -> str:
+    """
+    Escape a Python string for safe inclusion in SQL literals.
+
+    Parameters
+    ----------
+    value : str
+        Raw string value.
+
+    Returns
+    -------
+    str
+        Single-quoted SQL string literal.
+    """
     return "'" + value.replace("'", "''") + "'"
 
 
@@ -26,7 +39,30 @@ def render_sql(
     end_datetime: datetime,
     outlet_codes: Iterable[str],
 ) -> str:
-    """Render the deliberately small, allow-listed SQL template vocabulary."""
+    """
+    Render the allow-listed SQL template vocabulary.
+
+    Parameters
+    ----------
+    template : str
+        SQL template containing ``{{ token }}`` placeholders.
+    start_datetime : datetime
+        Inclusive extraction start timestamp.
+    end_datetime : datetime
+        Exclusive extraction end timestamp.
+    outlet_codes : iterable of str
+        Outlet codes to inject into the template.
+
+    Returns
+    -------
+    str
+        Rendered SQL string.
+
+    Raises
+    ------
+    InvalidSQL
+        If unknown or unresolved template tokens remain.
+    """
     values = {
         "start_datetime": _sql_string(start_datetime.isoformat(sep=" ")),
         "end_datetime": _sql_string(end_datetime.isoformat(sep=" ")),
@@ -45,12 +81,42 @@ def render_sql(
 
 
 def extraction_bounds(config: AnalysisConfig) -> tuple[datetime, datetime]:
+    """
+    Return the overall min/max bounds across all configured lounge periods.
+
+    Parameters
+    ----------
+    config : AnalysisConfig
+        Analysis configuration.
+
+    Returns
+    -------
+    start : datetime
+        Earliest configured period start.
+    end : datetime
+        Latest configured period end.
+    """
     starts = [period.start for lounge in config.lounges for period in (lounge.pre, lounge.post)]
     ends = [period.end for lounge in config.lounges for period in (lounge.pre, lounge.post)]
     return min(starts), max(ends)
 
 
 def query_dataframe(connection, sql: str) -> pd.DataFrame:
+    """
+    Execute SQL and return a lower-case column DataFrame.
+
+    Parameters
+    ----------
+    connection
+        Open Snowflake connection.
+    sql : str
+        SQL statement to execute.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Query result with lower-cased column names.
+    """
     cursor = connection.cursor()
     try:
         cursor.execute(sql)
@@ -60,7 +126,21 @@ def query_dataframe(connection, sql: str) -> pd.DataFrame:
 
 
 def extract_inputs(config: AnalysisConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Execute the visit and flight extracts for all configured periods."""
+    """
+    Execute visit and flight extracts for all configured periods.
+
+    Parameters
+    ----------
+    config : AnalysisConfig
+        Analysis configuration including SQL templates and Snowflake settings.
+
+    Returns
+    -------
+    visits : pandas.DataFrame
+        Visit extract.
+    flights : pandas.DataFrame
+        Flight extract.
+    """
     start, end = extraction_bounds(config)
     codes = [lounge.outlet_code for lounge in config.lounges]
     visit_sql = render_sql(

@@ -1,0 +1,19 @@
+# Dashboard defaults for the intervention impact Streamlit app.
+
+title: "Capacity Intervention Impact"
+subtitle: "Pre- vs post-intervention lounge performance"
+
+paths:
+  analysis_config: "config/analysis.yaml"
+
+visualization:
+  primary: "#ce0058"
+  secondary: "#003865"
+
+default_metrics:
+  - pp_visit_volume
+  - avg_monthly_visits
+  - estimated_pp_market_share
+  - peak_pp_utilisation_rate
+  - average_pp_utilisation_rate
+  - airport_traffic_peak

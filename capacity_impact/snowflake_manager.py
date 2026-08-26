@@ -18,11 +18,35 @@ DEFAULT_SECRET_KEYS = {
 
 
 class SnowflakeManager:
-    """Connect as a local user profile or as a non-human user via AWS Secrets Manager.
+    """
+    Manage Snowflake connections for local SSO or AWS-secret service users.
 
-    Local runs use browser SSO (``authenticator=externalbrowser``) and the
+    Local runs use browser SSO (``authenticator=externalbrowser``) with the
     interactive user profile. Non-local runs load a service-account private key
     from AWS Secrets Manager and connect with key-pair authentication.
+
+    Attributes
+    ----------
+    account : str
+        Snowflake account identifier.
+    is_run_locally : bool
+        Whether to use local SSO authentication.
+    user : str
+        Snowflake username.
+    warehouse : str
+        Default warehouse.
+    database : str or None
+        Optional default database.
+    schema : str or None
+        Optional default schema.
+    role : str or None
+        Optional default role.
+    secret_name : str or None
+        AWS Secrets Manager secret name for non-local auth.
+    region : str
+        AWS region for Secrets Manager.
+    connection
+        Active Snowflake connection, if opened.
     """
 
     def __init__(
@@ -43,6 +67,45 @@ class SnowflakeManager:
         warehouse_key: str = DEFAULT_SECRET_KEYS["warehouse_key"],
         session_parameters: Mapping[str, Any] | None = None,
     ) -> None:
+        """
+        Initialise connection settings and optionally load AWS secrets.
+
+        Parameters
+        ----------
+        account : str
+            Snowflake account identifier.
+        is_run_locally : bool, default True
+            Use local SSO when ``True``; AWS secret key-pair auth otherwise.
+        user : str or None, optional
+            Snowflake username. Defaults to ``SNOWFLAKE_USER`` locally.
+        warehouse : str or None, optional
+            Snowflake warehouse.
+        database : str or None, optional
+            Default database.
+        schema : str or None, optional
+            Default schema.
+        role : str or None, optional
+            Default role.
+        secret_name : str or None, optional
+            AWS secret containing non-human credentials.
+        region : str, default "eu-west-1"
+            AWS region for Secrets Manager.
+        username_key : str, optional
+            Secret JSON key for the username.
+        privatekey_key : str, optional
+            Secret JSON key for the private key.
+        passphrase_key : str, optional
+            Secret JSON key for the key passphrase.
+        warehouse_key : str, optional
+            Secret JSON key for the warehouse override.
+        session_parameters : mapping or None, optional
+            Snowflake session parameters such as ``QUERY_TAG``.
+
+        Raises
+        ------
+        ValueError
+            If required connection settings are missing.
+        """
         self.account = account
         self.is_run_locally = bool(is_run_locally)
         self.user = user or os.environ.get("SNOWFLAKE_USER", "")
@@ -84,7 +147,21 @@ class SnowflakeManager:
         settings: Mapping[str, Any],
         environ: Mapping[str, str] | None = None,
     ) -> SnowflakeManager:
-        """Build a manager from the analysis YAML ``snowflake`` block."""
+        """
+        Build a manager from the analysis YAML ``snowflake`` block.
+
+        Parameters
+        ----------
+        settings : mapping
+            Snowflake settings from analysis config.
+        environ : mapping of str or None, optional
+            Environment variables. Defaults to ``os.environ``.
+
+        Returns
+        -------
+        SnowflakeManager
+            Configured connection manager.
+        """
         environment = os.environ if environ is None else environ
         session_parameters = _session_parameters(settings)
         return cls(
@@ -125,7 +202,21 @@ class SnowflakeManager:
         )
 
     def get_secret(self, secret_name: str, region_name: str) -> None:
-        """Load non-human Snowflake credentials from AWS Secrets Manager."""
+        """
+        Load non-human Snowflake credentials from AWS Secrets Manager.
+
+        Parameters
+        ----------
+        secret_name : str
+            AWS secret identifier.
+        region_name : str
+            AWS region for the Secrets Manager client.
+
+        Raises
+        ------
+        Exception
+            Propagates boto3 or JSON parsing failures after logging.
+        """
         try:
             response = _secrets_manager_client(region_name).get_secret_value(
                 SecretId=secret_name
@@ -141,7 +232,14 @@ class SnowflakeManager:
         self.warehouse = secret.get(self.warehouse_key, self.warehouse)
 
     def connect(self):
-        """Open a Snowflake connection using the configured auth mode."""
+        """
+        Open a Snowflake connection using the configured auth mode.
+
+        Returns
+        -------
+        connection
+            Active Snowflake connection object.
+        """
         kwargs: dict[str, Any] = {
             "account": self.account,
             "user": self.user,
@@ -169,18 +267,39 @@ class SnowflakeManager:
         return self.connection
 
     def cursor(self):
-        """Return a cursor, opening the connection if needed."""
+        """
+        Return a cursor, opening the connection if needed.
+
+        Returns
+        -------
+        cursor
+            Snowflake cursor for the active connection.
+        """
         if self.connection is None:
             self.connect()
         return self.connection.cursor()
 
     def close_connection(self) -> None:
+        """Close the active Snowflake connection if one is open."""
         if self.connection is not None:
             self.connection.close()
             self.connection = None
             logger.info("Snowflake connection closed")
 
     def _load_private_key(self):
+        """
+        Deserialize the PEM private key loaded from AWS Secrets Manager.
+
+        Returns
+        -------
+        cryptography private key object
+            Key suitable for Snowflake key-pair authentication.
+
+        Raises
+        ------
+        ValueError
+            If the private key or passphrase has not been loaded.
+        """
         if not self.privatekey or self.passphrase is None:
             raise ValueError("Private key and passphrase must be loaded from the AWS secret")
 
@@ -195,12 +314,38 @@ class SnowflakeManager:
 
 
 def _snowflake_connect(**kwargs):
+    """
+    Create a Snowflake connector connection.
+
+    Parameters
+    ----------
+    **kwargs
+        Arguments forwarded to ``snowflake.connector.connect``.
+
+    Returns
+    -------
+    connection
+        Snowflake connection object.
+    """
     import snowflake.connector
 
     return snowflake.connector.connect(**kwargs)
 
 
 def _secrets_manager_client(region_name: str):
+    """
+    Build an AWS Secrets Manager client.
+
+    Parameters
+    ----------
+    region_name : str
+        AWS region name.
+
+    Returns
+    -------
+    boto3.client
+        Secrets Manager client.
+    """
     import boto3
 
     return boto3.session.Session().client(
@@ -210,12 +355,40 @@ def _secrets_manager_client(region_name: str):
 
 
 def _is_local(settings: Mapping[str, Any], environment: Mapping[str, str]) -> bool:
+    """
+    Determine whether to use local SSO based on config and environment.
+
+    Parameters
+    ----------
+    settings : mapping
+        Snowflake settings block.
+    environment : mapping of str
+        Process environment variables.
+
+    Returns
+    -------
+    bool
+        ``True`` when local SSO should be used.
+    """
     if environment.get("ENVIRONMENT"):
         return False
     return bool(settings.get("is_run_locally", True))
 
 
 def _session_parameters(settings: Mapping[str, Any]) -> dict[str, str]:
+    """
+    Build Snowflake session parameters such as ``QUERY_TAG`` from config.
+
+    Parameters
+    ----------
+    settings : mapping
+        Snowflake settings block.
+
+    Returns
+    -------
+    dict of str
+        Session parameters to pass to Snowflake connect.
+    """
     raw = settings.get("session_parameters") or settings.get("query_tags") or {}
     if not isinstance(raw, Mapping):
         return {}
