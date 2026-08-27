@@ -158,7 +158,7 @@ def build_html_report(
             f"<h3>{html.escape(metric_label_text)}</h3>"
             f'<div class="chart-grid two-up">'
             f'{_chart_block("Pre vs post", next_figure(pre_post_fig))}'
-            f'{_chart_block("Absolute change", next_figure(delta_fig))}'
+            f'<div class="chart-block"><div class="chart-shell">{next_figure(delta_fig)}</div></div>'
             f"</div></div>"
         )
     metrics_html = "".join(metric_sections)

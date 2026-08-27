@@ -95,36 +95,42 @@ def delta_bar_chart(impact: pd.DataFrame, metric: str) -> go.Figure:
     work = impact[["outlet_code", f"{metric}_delta"]].copy()
     work["delta"] = pd.to_numeric(work[f"{metric}_delta"], errors="coerce")
     work = work.dropna(subset=["delta"]).sort_values("delta")
+    if work.empty:
+        return go.Figure()
+
+    is_percent = ("utilisation" in metric) or ("market_share" in metric)
+    plot_values = work["delta"] * 100.0 if is_percent else work["delta"]
     colors = [
         COLORS["positive"] if value >= 0 else COLORS["negative"]
-        for value in work["delta"]
+        for value in plot_values
     ]
-
-    if ("utilisation" in metric) or ("market_share" in metric):
-        work["delta"] = work["delta"].map(lambda v: f"{100 * v:+.1f}%" if abs(v) < 1 else f"{v:+,.0f}%")
+    if is_percent:
+        text_labels = plot_values.map(lambda v: f"{v:+.1f}%")
     else:
-        work["delta"] = work["delta"].map(lambda v: f"{v:+.2f}" if abs(v) < 1 else f"{v:+,.0f}")
+        text_labels = plot_values.map(
+            lambda v: f"{v:+.2f}" if abs(v) < 1 else f"{v:+,.0f}"
+        )
 
     fig = go.Figure(
         go.Bar(
-            x=work["delta"],
+            x=plot_values,
             y=work["outlet_code"],
             orientation="h",
             marker_color=colors,
-            text=work["delta"],
+            text=text_labels,
             textposition="outside",
         )
     )
     fig.update_layout(
         title=f"{metric_label(metric)} change (post − pre)",
-        xaxis_title="Change",
+        xaxis_title="Change (percentage points)" if is_percent else "Change",
         yaxis_title="Outlet",
         height=max(320, 48 * len(work) + 80),
         margin=dict(t=60, l=80, r=40),
     )
-
-    if ("utilisation" in metric) or ("market share" in metric):
-        fig.layout.xaxis.tickformat = ',.0%'
+    fig.update_xaxes(zeroline=True, zerolinecolor="#64748b", zerolinewidth=1.5)
+    if is_percent:
+        fig.update_xaxes(ticksuffix="%")
 
     return fig
 
