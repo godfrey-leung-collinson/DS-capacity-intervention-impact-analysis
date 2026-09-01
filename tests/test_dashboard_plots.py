@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from dashboards.data import load_analysis_config, load_saved_results
 from dashboards.plots import quadrant_transition_chart
@@ -42,3 +43,27 @@ def test_delta_bar_chart_uses_numeric_zero_centred_axis() -> None:
 def test_quadrant_transition_chart_empty() -> None:
     fig = quadrant_transition_chart(pd.DataFrame())
     assert fig.data == ()
+
+
+def test_quadrant_transition_chart_supports_average_percentiles() -> None:
+    impact = pd.DataFrame(
+        {
+            "outlet_code": ["A", "B"],
+            "pre_airport_traffic_average": [10.0, 20.0],
+            "post_airport_traffic_average": [12.0, 24.0],
+            "pre_average_pp_utilisation_rate": [0.2, 0.4],
+            "post_average_pp_utilisation_rate": [0.3, 0.5],
+        }
+    )
+
+    fig = quadrant_transition_chart(
+        impact,
+        aggregation="average",
+        threshold_percentile=50,
+    )
+
+    assert len(fig.data) == 2
+    assert "movement (average)" in fig.layout.title.text
+    assert "Average airport traffic index" in fig.layout.xaxis.title.text
+    assert fig.layout.shapes[4].x0 == pytest.approx(15.0)
+    assert fig.layout.shapes[5].y0 == pytest.approx(30.0)

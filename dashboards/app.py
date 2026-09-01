@@ -26,6 +26,7 @@ from dashboards.data import (
 )
 from dashboards.metrics import (
     TRACKABLE_METRICS,
+    available_trackable_metrics,
     format_metric_value,
     metric_label,
 )
@@ -48,7 +49,7 @@ from dashboards.plots import (
     pre_post_grouped_bar,
     quadrant_transition_chart,
 )
-from dashboards.report import styled_impact_table
+from dashboards.report import styled_impact_table, quadrant_plot_kwargs
 from dashboards.summary import build_executive_summary
 
 DASHBOARD_CONFIG_PATH = Path(__file__).parent / "config" / "dashboard_config.yaml"
@@ -234,11 +235,27 @@ def main() -> None:
         st.error(f"Failed to load analysis results: {exc}")
         st.stop()
 
+    trackable_metrics = available_trackable_metrics(impact)
+    unavailable_defaults = [
+        metric
+        for metric in default_metrics
+        if metric in TRACKABLE_METRICS and metric not in trackable_metrics
+    ]
+    if unavailable_defaults:
+        labels = ", ".join(metric_label(metric) for metric in unavailable_defaults)
+        st.warning(
+            f"{labels} unavailable in saved results. "
+            "Re-run `python -m capacity_impact.cli` or refresh from Snowflake."
+        )
+
+    selected_metrics = [
+        metric for metric in selected_metrics if metric in trackable_metrics
+    ]
+    if not selected_metrics:
+        selected_metrics = list(trackable_metrics) or list(TRACKABLE_METRICS)
+
     analysis_config = load_analysis_config(config_path)
-    quadrant_plot_kwargs = {
-        "high_utilisation_threshold": analysis_config.metrics.high_utilisation_threshold,
-        "high_traffic_threshold": analysis_config.metrics.high_traffic_threshold,
-    }
+    quadrant_plot_kwargs_dict = quadrant_plot_kwargs(analysis_config, impact)
 
     summary = build_executive_summary(impact)
     render_executive_summary(summary)
@@ -267,8 +284,19 @@ def main() -> None:
                 key="overview_metric_heatmap",
             )
         with right:
+            overview_quadrant_aggregation = st.radio(
+                "Quadrant measure",
+                options=["peak", "average"],
+                format_func=str.title,
+                horizontal=True,
+                key="overview_quadrant_measure",
+            )
             st.plotly_chart(
-                quadrant_transition_chart(filtered, **quadrant_plot_kwargs),
+                quadrant_transition_chart(
+                    filtered,
+                    aggregation=overview_quadrant_aggregation,
+                    **quadrant_plot_kwargs_dict,
+                ),
                 use_container_width=True,
                 key="overview_quadrant_transition",
             )
@@ -331,8 +359,19 @@ def main() -> None:
             }
         )
         st.dataframe(quadrant_view, use_container_width=True, hide_index=True)
+        quadrant_aggregation = st.radio(
+            "Quadrant measure",
+            options=["peak", "average"],
+            format_func=str.title,
+            horizontal=True,
+            key="quadrants_measure",
+        )
         st.plotly_chart(
-            quadrant_transition_chart(filtered, **quadrant_plot_kwargs),
+            quadrant_transition_chart(
+                filtered,
+                aggregation=quadrant_aggregation,
+                **quadrant_plot_kwargs_dict,
+            ),
             use_container_width=True,
             key="quadrants_transition",
         )

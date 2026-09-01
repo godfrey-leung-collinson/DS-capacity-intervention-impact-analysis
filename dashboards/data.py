@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pandas as pd
 
-from capacity_impact.analysis import run_analysis
+from capacity_impact.analysis import (
+    CHANGE_METRICS,
+    compare_periods,
+    ensure_change_metric_columns,
+    run_analysis,
+)
 from capacity_impact.config import AnalysisConfig, load_config
 from capacity_impact.data import extract_inputs
 
@@ -85,7 +90,73 @@ def load_saved_results(config: AnalysisConfig) -> tuple[pd.DataFrame, pd.DataFra
         impact_path,
         parse_dates=["pre_period_start", "pre_period_end", "post_period_start", "post_period_end"],
     )
-    return period_metrics, impact
+    return enrich_saved_results(period_metrics, impact, config)
+
+
+def _missing_change_metrics(impact: pd.DataFrame) -> tuple[str, ...]:
+    return tuple(
+        metric for metric in CHANGE_METRICS if f"pre_{metric}" not in impact.columns
+    )
+
+
+def _merge_impact_columns(
+    impact: pd.DataFrame,
+    refreshed: pd.DataFrame,
+    metrics: tuple[str, ...],
+) -> pd.DataFrame:
+    columns = ["outlet_code"]
+    for metric in metrics:
+        columns.extend(
+            [
+                f"pre_{metric}",
+                f"post_{metric}",
+                f"{metric}_delta",
+                f"{metric}_pct_change",
+            ]
+        )
+    columns = [column for column in columns if column in refreshed.columns]
+    if len(columns) <= 1:
+        return impact
+
+    work = impact.drop(
+        columns=[column for column in columns if column != "outlet_code" and column in impact.columns],
+        errors="ignore",
+    )
+    return work.merge(refreshed[columns], on="outlet_code", how="left")
+
+
+def enrich_saved_results(
+    period_metrics: pd.DataFrame,
+    impact: pd.DataFrame,
+    config: AnalysisConfig,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Backfill newer change metrics into saved CSV outputs when possible.
+
+    When cached visit/flight extracts exist, the analysis is recomputed. When
+    only period metrics contain the new fields, paired impact columns are
+    merged from a fresh :func:`compare_periods` pass. Otherwise missing columns
+    are added as ``NaN`` so dashboards fail gracefully.
+    """
+    missing = _missing_change_metrics(impact)
+    if not missing:
+        return period_metrics, ensure_change_metric_columns(impact)
+
+    period_missing = tuple(metric for metric in missing if metric not in period_metrics.columns)
+    if not period_missing:
+        refreshed = compare_periods(period_metrics)
+        impact = _merge_impact_columns(impact, refreshed, missing)
+        return period_metrics, ensure_change_metric_columns(impact)
+
+    visits_path = config.output_directory / "visits_extract.csv"
+    flights_path = config.output_directory / "flights_extract.csv"
+    if visits_path.exists() and flights_path.exists():
+        visits = pd.read_csv(visits_path, parse_dates=["visit_interval"])
+        flights = pd.read_csv(flights_path, parse_dates=["flight_interval"])
+        if not visits.empty and not flights.empty:
+            return run_analysis(visits, flights, config)
+
+    return period_metrics, ensure_change_metric_columns(impact)
 
 
 def load_raw_inputs(config: AnalysisConfig) -> tuple[pd.DataFrame, pd.DataFrame]:

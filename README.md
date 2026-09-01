@@ -20,6 +20,8 @@ The calculations follow `MLP-Outlet-Capacity-UI`:
   passenger market share.
 - **Airport traffic peak**: maximum departures in the configured forward window
   (three hours by default), using actual 15-minute departure data.
+- **Visit-to-flight ratio**: total PP visits divided by the sum of forward
+  departure counts in the configured window across the period.
 - **Capacity quadrant**: the source dashboard's inclusive utilisation/traffic
   threshold rules, with labels Capacity risk, Opportunity gap, Usage anomaly,
   Capacity/Opportunity gap, Usage anomaly, and Low priority.

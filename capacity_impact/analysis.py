@@ -9,9 +9,11 @@ from capacity_impact.config import AnalysisConfig, LoungeIntervention
 from capacity_impact.exc import DataMissing, DataInvalid, DataInconsistent, InvalidParameter
 from capacity_impact.metrics import (
     assign_quadrant,
+    compute_airport_traffic_average,
     compute_airport_traffic_peak,
     compute_traffic_threshold,
     compute_visit_metrics,
+    compute_visit_to_flight_ratio,
     period_days,
 )
 
@@ -25,6 +27,8 @@ CHANGE_METRICS = (
     "average_pp_utilisation_rate",
     "average_pp_estimated_occupancy",
     "airport_traffic_peak",
+    "airport_traffic_average",
+    "visit_to_flight_ratio",
 )
 
 
@@ -129,6 +133,21 @@ def _period_row(
         config.metrics,
         airport_code=airport_code,
     )
+    metrics["airport_traffic_average"] = compute_airport_traffic_average(
+        flights,
+        period,
+        config.metrics,
+        airport_code=airport_code,
+    )
+    metrics["visit_to_flight_ratio"] = compute_visit_to_flight_ratio(
+        visits,
+        flights,
+        period,
+        config.metrics,
+        outlet_code=lounge.outlet_code,
+        airport_code=airport_code,
+        number_of_seats=seat_override,
+    )
     return {
         "outlet_code": lounge.outlet_code,
         "airport_code": airport_code,
@@ -212,8 +231,14 @@ def compare_periods(period_metrics: pd.DataFrame) -> pd.DataFrame:
     )
     result = pre.join(post, how="outer", validate="one_to_one").reset_index()
     for metric in CHANGE_METRICS:
-        before = pd.to_numeric(result[f"pre_{metric}"], errors="coerce")
-        after = pd.to_numeric(result[f"post_{metric}"], errors="coerce")
+        pre_col = f"pre_{metric}"
+        post_col = f"post_{metric}"
+        if pre_col not in result.columns:
+            result[pre_col] = np.nan
+        if post_col not in result.columns:
+            result[post_col] = np.nan
+        before = pd.to_numeric(result[pre_col], errors="coerce")
+        after = pd.to_numeric(result[post_col], errors="coerce")
         result[f"{metric}_delta"] = after - before
         result[f"{metric}_pct_change"] = np.where(
             before.ne(0) & before.notna(),
@@ -232,6 +257,38 @@ def compare_periods(period_metrics: pd.DataFrame) -> pd.DataFrame:
         + result["post_quadrant_label"].fillna("NaN")  # TODO: impute for potential new outlets added (to check/revisit)
     )
     return result
+
+
+def ensure_change_metric_columns(impact: pd.DataFrame) -> pd.DataFrame:
+    """
+    Ensure a wide impact table exposes all configured change-metric columns.
+
+    Missing pre/post values are filled with ``NaN`` and deltas are derived when
+    possible so dashboards can load older saved CSV outputs safely.
+    """
+    work = impact.copy()
+    for metric in CHANGE_METRICS:
+        pre_col = f"pre_{metric}"
+        post_col = f"post_{metric}"
+        delta_col = f"{metric}_delta"
+        pct_col = f"{metric}_pct_change"
+        if pre_col not in work.columns:
+            work[pre_col] = np.nan
+        if post_col not in work.columns:
+            work[post_col] = np.nan
+        if delta_col not in work.columns:
+            before = pd.to_numeric(work[pre_col], errors="coerce")
+            after = pd.to_numeric(work[post_col], errors="coerce")
+            work[delta_col] = after - before
+        if pct_col not in work.columns:
+            before = pd.to_numeric(work[pre_col], errors="coerce")
+            after = pd.to_numeric(work[post_col], errors="coerce")
+            work[pct_col] = np.where(
+                before.ne(0) & before.notna(),
+                (after - before) / before,
+                np.nan,
+            )
+    return work
 
 
 def run_analysis(

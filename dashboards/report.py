@@ -14,6 +14,7 @@ from capacity_impact.config import AnalysisConfig, LoungeIntervention
 from dashboards.data import load_analysis_config, load_raw_inputs, load_saved_results
 from dashboards.metrics import (
     TRACKABLE_METRICS,
+    available_trackable_metrics,
     format_delta,
     format_metric_value,
     format_pct_change,
@@ -78,16 +79,25 @@ def styled_impact_table(impact: pd.DataFrame) -> pd.DataFrame:
     """
     display = impact.copy()
     for metric in TRACKABLE_METRICS:
-        display[f"pre_{metric}"] = display[f"pre_{metric}"].map(
+        pre_col = f"pre_{metric}"
+        post_col = f"post_{metric}"
+        delta_col = f"{metric}_delta"
+        pct_col = f"{metric}_pct_change"
+        if pre_col not in display.columns:
+            continue
+        display[pre_col] = display[pre_col].map(
             lambda value, m=metric: format_metric_value(value, m)
         )
-        display[f"post_{metric}"] = display[f"post_{metric}"].map(
-            lambda value, m=metric: format_metric_value(value, m)
-        )
-        display[f"{metric}_delta"] = display[f"{metric}_delta"].map(
-            lambda value, m=metric: format_delta(value, m)
-        )
-        display[f"{metric}_pct_change"] = display[f"{metric}_pct_change"].map(format_pct_change)
+        if post_col in display.columns:
+            display[post_col] = display[post_col].map(
+                lambda value, m=metric: format_metric_value(value, m)
+            )
+        if delta_col in display.columns:
+            display[delta_col] = display[delta_col].map(
+                lambda value, m=metric: format_delta(value, m)
+            )
+        if pct_col in display.columns:
+            display[pct_col] = display[pct_col].map(format_pct_change)
     rename = {
         "outlet_code": "Outlet",
         "pre_quadrant_label": "Pre quadrant",
@@ -125,6 +135,8 @@ class ReportContext:
         Portfolio executive summary.
     selected_metrics : tuple of str
         Metrics to include in portfolio charts.
+    unavailable_metrics : tuple of str
+        Requested default metrics missing from the loaded impact table.
     """
 
     dashboard_config: dict
@@ -134,6 +146,7 @@ class ReportContext:
     visits: pd.DataFrame
     summary: ExecutiveSummary
     selected_metrics: tuple[str, ...]
+    unavailable_metrics: tuple[str, ...] = ()
 
 
 def load_report_context(
@@ -185,9 +198,16 @@ def load_report_context(
         ].copy()
 
     default_metrics = dashboard_config.get("default_metrics", list(TRACKABLE_METRICS))
-    selected_metrics = tuple(
+    requested_metrics = tuple(
         metric for metric in default_metrics if metric in TRACKABLE_METRICS
     ) or TRACKABLE_METRICS
+    available_metrics = available_trackable_metrics(impact)
+    selected_metrics = tuple(
+        metric for metric in requested_metrics if metric in available_metrics
+    ) or available_metrics or TRACKABLE_METRICS
+    unavailable_metrics = tuple(
+        metric for metric in requested_metrics if metric not in available_metrics
+    )
 
     return ReportContext(
         dashboard_config=dashboard_config,
@@ -197,6 +217,7 @@ def load_report_context(
         visits=visits,
         summary=build_executive_summary(impact),
         selected_metrics=selected_metrics,
+        unavailable_metrics=unavailable_metrics,
     )
 
 
@@ -241,6 +262,19 @@ def quadrant_table(impact: pd.DataFrame) -> pd.DataFrame:
     return view.rename(columns=rename)
 
 
+def quadrant_plot_kwargs(
+    analysis_config: AnalysisConfig,
+    impact: pd.DataFrame,
+) -> dict[str, object]:
+    """Shared kwargs for quadrant transition charts in app and HTML export."""
+    return {
+        "high_utilisation_threshold": analysis_config.metrics.high_utilisation_threshold,
+        "high_traffic_threshold": analysis_config.metrics.high_traffic_threshold,
+        "threshold_percentile": analysis_config.metrics.traffic_percentile,
+        "threshold_reference": impact,
+    }
+
+
 def build_portfolio_figures(context: ReportContext) -> dict[str, go.Figure | list[tuple[str, go.Figure]]]:
     """
     Build portfolio-level Plotly figures for overview and metric tabs.
@@ -258,10 +292,7 @@ def build_portfolio_figures(context: ReportContext) -> dict[str, go.Figure | lis
     """
     impact = context.impact
     metrics = context.selected_metrics
-    quadrant_kwargs = {
-        "high_utilisation_threshold": context.analysis_config.metrics.high_utilisation_threshold,
-        "high_traffic_threshold": context.analysis_config.metrics.high_traffic_threshold,
-    }
+    quadrant_kwargs = quadrant_plot_kwargs(context.analysis_config, impact)
     primary_metric = metrics[0]
     metric_figures = [
         (
@@ -273,10 +304,29 @@ def build_portfolio_figures(context: ReportContext) -> dict[str, go.Figure | lis
     ]
     return {
         "overview_heatmap": metric_heatmap(impact, metrics),
-        "overview_quadrant": quadrant_transition_chart(impact, **quadrant_kwargs),
+        "overview_quadrant_peak": quadrant_transition_chart(
+            impact,
+            aggregation="peak",
+            **quadrant_kwargs,
+        ),
+        "overview_quadrant_average": quadrant_transition_chart(
+            impact,
+            aggregation="average",
+            **quadrant_kwargs,
+        ),
         "overview_primary_bar": pre_post_grouped_bar(impact, primary_metric),
+        "overview_primary_metric_label": metric_label(primary_metric),
         "metric_sections": metric_figures,
-        "quadrants_scatter": quadrant_transition_chart(impact, **quadrant_kwargs),
+        "quadrants_scatter_peak": quadrant_transition_chart(
+            impact,
+            aggregation="peak",
+            **quadrant_kwargs,
+        ),
+        "quadrants_scatter_average": quadrant_transition_chart(
+            impact,
+            aggregation="average",
+            **quadrant_kwargs,
+        ),
     }
 
 

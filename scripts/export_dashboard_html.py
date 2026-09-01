@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Export the capacity intervention Streamlit dashboard as standalone HTML.
 
+Includes the same portfolio metrics as the Streamlit app (including
+visit-to-flight ratio), peak/average quadrant toggles, and outlet-level
+pre/post KPI cards.
+
 Usage (from project root):
     python scripts/export_dashboard_html.py
     python scripts/export_dashboard_html.py --output reports/intervention_report.html --open

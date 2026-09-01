@@ -18,6 +18,7 @@ from dashboards.report import (
     quadrant_table,
     styled_impact_table,
 )
+from dashboards.metrics import format_metric_value, metric_label
 
 PLOTLY_CONFIG = {
     "responsive": True,
@@ -88,6 +89,36 @@ def _tab_button(tab_id: str, label: str, *, active: bool = False) -> str:
     )
 
 
+def _quadrant_measure_control(control_id: str) -> str:
+    return (
+        f'<div class="control-row">'
+        f'<label for="{control_id}">Quadrant measure '
+        f'<select id="{control_id}" onchange="selectQuadrantMeasure(\'{control_id}\', this.value)">'
+        f'<option value="peak" selected>Peak</option>'
+        f'<option value="average">Average</option>'
+        f"</select></label></div>"
+    )
+
+
+def _quadrant_chart_panels(
+    peak_fragment: str,
+    average_fragment: str,
+    *,
+    panel_prefix: str,
+) -> str:
+    return (
+        '<div class="chart-column">'
+        + _quadrant_measure_control(f"{panel_prefix}-quadrant-measure")
+        + f'<div class="quadrant-chart-panel" data-quadrant-group="{panel_prefix}" data-measure="peak">'
+        + f'{_chart_block("Quadrant movement (peak)", peak_fragment)}'
+        + "</div>"
+        + f'<div class="quadrant-chart-panel" data-quadrant-group="{panel_prefix}" data-measure="average" hidden>'
+        + f'{_chart_block("Quadrant movement (average)", average_fragment)}'
+        + "</div>"
+        + "</div>"
+    )
+
+
 def build_html_report(
     output_path: Path,
     *,
@@ -111,6 +142,15 @@ def build_html_report(
     subtitle = dashboard_config.get("subtitle", "Pre- vs post-intervention lounge performance")
     summary = context.summary
     portfolio = build_portfolio_figures(context)
+
+    unavailable_notice = ""
+    if context.unavailable_metrics:
+        labels = ", ".join(metric_label(metric) for metric in context.unavailable_metrics)
+        unavailable_notice = (
+            f'<p class="notice">{html.escape(labels)} unavailable in saved results. '
+            "Re-run <code>python -m capacity_impact.cli</code> or export with "
+            "<code>--refresh-from-snowflake</code>.</p>"
+        )
 
     include_first: str | bool = "inline" if plotly_js == "inline" else "cdn"
     figure_count = 0
@@ -141,12 +181,17 @@ def build_html_report(
     )
 
     overview_html = (
-        '<div class="chart-grid two-up">'
+        unavailable_notice
+        + '<div class="chart-grid two-up">'
         + _chart_block("Percentage change heatmap", next_figure(portfolio["overview_heatmap"]))
-        + _chart_block("Quadrant movement", next_figure(portfolio["overview_quadrant"]))
+        + _quadrant_chart_panels(
+            next_figure(portfolio["overview_quadrant_peak"]),
+            next_figure(portfolio["overview_quadrant_average"]),
+            panel_prefix="overview",
+        )
         + "</div>"
         + _chart_block(
-            f"Pre/post comparison — {context.selected_metrics[0]}",
+            f'Pre/post comparison — {portfolio["overview_primary_metric_label"]}',
             next_figure(portfolio["overview_primary_bar"]),
         )
     )
@@ -165,7 +210,11 @@ def build_html_report(
 
     quadrants_html = (
         _table(quadrant_table(context.impact), "quadrant-table", "Quadrant summary")
-        + _chart_block("Quadrant movement", next_figure(portfolio["quadrants_scatter"]))
+        + _quadrant_chart_panels(
+            next_figure(portfolio["quadrants_scatter_peak"]),
+            next_figure(portfolio["quadrants_scatter_average"]),
+            panel_prefix="quadrants",
+        )
     )
 
     outlet_options = sorted(context.impact["outlet_code"].astype(str).unique().tolist())
@@ -192,8 +241,34 @@ def build_html_report(
                 [
                     ("Pre quadrant", record.get("pre_quadrant_label", "—")),
                     ("Post quadrant", record.get("post_quadrant_label", "—")),
-                    ("Pre visit volume", record.get("pre_pp_visit_volume", "—")),
-                    ("Post visit volume", record.get("post_pp_visit_volume", "—")),
+                    (
+                        "Pre visit volume",
+                        format_metric_value(
+                            record.get("pre_pp_visit_volume"),
+                            "pp_visit_volume",
+                        ),
+                    ),
+                    (
+                        "Post visit volume",
+                        format_metric_value(
+                            record.get("post_pp_visit_volume"),
+                            "pp_visit_volume",
+                        ),
+                    ),
+                    (
+                        "Pre visit-to-flight ratio",
+                        format_metric_value(
+                            record.get("pre_visit_to_flight_ratio"),
+                            "visit_to_flight_ratio",
+                        ),
+                    ),
+                    (
+                        "Post visit-to-flight ratio",
+                        format_metric_value(
+                            record.get("post_visit_to_flight_ratio"),
+                            "visit_to_flight_ratio",
+                        ),
+                    ),
                 ]
             )
 
@@ -308,12 +383,15 @@ header p {{ margin:0 0 6px; }}
 .card-label {{ color:var(--muted); font-size:12px; font-weight:bold; text-transform:uppercase; }}
 .card-value {{ margin-top:7px; color:var(--navy); font-size:20px; font-weight:bold; }}
 .caption {{ color:var(--muted); font-size:12px; }}
+.notice {{ margin:0 0 16px; padding:12px 14px; border-left:4px solid #f59e0b; border-radius:6px; background:#fffbeb; color:#7c2d12; }}
+.quadrant-chart-panel {{ width:100%; }}
 .tab-bar {{ display:flex; flex-wrap:wrap; gap:8px; margin:20px 16px 0; }}
 .tab-button {{ border:1px solid var(--line); background:white; color:var(--navy); border-radius:999px; padding:10px 16px; cursor:pointer; font-weight:bold; }}
 .tab-button.active {{ background:var(--pink); border-color:var(--pink); color:white; }}
 .tab-panel {{ display:none; }}
 .tab-panel.active {{ display:block; }}
 .chart-grid.two-up {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:16px; }}
+.chart-column {{ display:flex; flex-direction:column; gap:8px; min-width:0; }}
 .chart-block {{ margin-top:16px; }}
 .chart-shell {{ width:100%; overflow:hidden; }}
 .chart-shell .plotly-graph-div {{ width:100% !important; max-width:100%; }}
@@ -348,6 +426,13 @@ function showTab(tabId) {{
   }} else {{
     resizeVisiblePlots(document.getElementById('tab-' + tabId));
   }}
+}}
+function selectQuadrantMeasure(controlId, measure) {{
+  const group = controlId.startsWith('overview') ? 'overview' : 'quadrants';
+  document.querySelectorAll(`.quadrant-chart-panel[data-quadrant-group="${{group}}"]`).forEach(panel => {{
+    panel.hidden = panel.dataset.measure !== measure;
+  }});
+  resizeVisiblePlots(document.getElementById(`tab-${{group === 'overview' ? 'overview' : 'quadrants'}}`));
 }}
 function selectOutlet(outletCode) {{
   document.querySelectorAll('.outlet-panel').forEach(panel => {{

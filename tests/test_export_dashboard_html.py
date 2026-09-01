@@ -23,6 +23,9 @@ def test_export_dashboard_html_builds(tmp_path: Path) -> None:
     assert "plotly-graph-div" in content
     assert "Executive summary" in content
     assert "Outlet view" in content
+    assert "Visit-to-flight ratio" in content
+    assert "Quadrant measure" in content
+    assert "Pre visit-to-flight ratio" in content
 
 
 def test_load_report_context_from_saved_outputs() -> None:
@@ -33,3 +36,4 @@ def test_load_report_context_from_saved_outputs() -> None:
     )
     assert not context.impact.empty
     assert context.summary.outlet_count == len(context.impact)
+    assert "visit_to_flight_ratio" in context.selected_metrics

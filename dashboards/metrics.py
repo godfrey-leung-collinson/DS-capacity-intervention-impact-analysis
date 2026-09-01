@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pandas as pd
+
 from capacity_impact.analysis import CHANGE_METRICS
 
 METRIC_SPECS: dict[str, dict[str, str]] = {
@@ -50,9 +52,28 @@ METRIC_SPECS: dict[str, dict[str, str]] = {
         "format": "count",
         "help": "Peak forward departure count in the configured window.",
     },
+    "visit_to_flight_ratio": {
+        "label": "Visit-to-flight ratio",
+        "format": "ratio",
+        "help": (
+            "Total PP visits divided by the sum of forward departure counts "
+            "in the configured window across the period."
+        ),
+    },
 }
 
 TRACKABLE_METRICS = tuple(metric for metric in CHANGE_METRICS if metric in METRIC_SPECS)
+
+
+def available_trackable_metrics(impact: pd.DataFrame) -> tuple[str, ...]:
+    """Return dashboard metrics that have both pre and post values available."""
+    return tuple(
+        metric
+        for metric in TRACKABLE_METRICS
+        if f"pre_{metric}" in impact.columns
+        and f"post_{metric}" in impact.columns
+        and impact[[f"pre_{metric}", f"post_{metric}"]].notna().any().any()
+    )
 
 
 def metric_label(metric: str) -> str:
@@ -96,6 +117,8 @@ def format_metric_value(value: float | None, metric: str) -> str:
         return f"{float(value):.1%}"
     if fmt == "count":
         return f"{float(value):,.0f}"
+    if fmt == "ratio":
+        return f"{float(value):,.3f}"
     return f"{float(value):,.2f}"
 
 
@@ -124,6 +147,8 @@ def format_delta(value: float | None, metric: str) -> str:
         return f"{sign}{float(value):.1%}"
     if fmt == "count":
         return f"{sign}{float(value):,.0f}"
+    if fmt == "ratio":
+        return f"{sign}{float(value):,.3f}"
     return f"{sign}{float(value):,.2f}"
 
 

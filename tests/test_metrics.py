@@ -7,8 +7,10 @@ import pytest
 from capacity_impact.config import Period
 from capacity_impact.metrics import (
     assign_quadrant,
+    compute_airport_traffic_average,
     compute_airport_traffic_peak,
     compute_visit_metrics,
+    compute_visit_to_flight_ratio,
 )
 
 
@@ -54,6 +56,45 @@ def test_forward_airport_traffic_peak(flights, settings):
         airport_code="TST",
     )
     assert peak == 12
+
+
+def test_forward_airport_traffic_average(flights, settings):
+    average = compute_airport_traffic_average(
+        flights,
+        Period(datetime(2026, 1, 1), datetime(2026, 1, 2)),
+        settings,
+        airport_code="TST",
+    )
+    assert average == pytest.approx(1.5)
+
+
+def test_visit_to_flight_ratio_uses_period_totals(visits, flights, settings):
+    period = Period(datetime(2026, 1, 1), datetime(2026, 1, 2))
+    ratio = compute_visit_to_flight_ratio(
+        visits,
+        flights,
+        period,
+        settings,
+        outlet_code="TEST1",
+        airport_code="TST",
+    )
+    assert ratio == pytest.approx(30 / 144)
+
+
+def test_visit_to_flight_ratio_empty_without_flight_data(visits, settings):
+    period = Period(datetime(2026, 1, 1), datetime(2026, 1, 2))
+    empty_flights = pd.DataFrame(
+        columns=["flight_interval", "airport_code", "departure_flight_count"]
+    )
+    ratio = compute_visit_to_flight_ratio(
+        visits,
+        empty_flights,
+        period,
+        settings,
+        outlet_code="TEST1",
+        airport_code="TST",
+    )
+    assert ratio != ratio
 
 
 @pytest.mark.parametrize(

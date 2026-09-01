@@ -17,3 +17,4 @@ default_metrics:
   - peak_pp_utilisation_rate
   - average_pp_utilisation_rate
   - airport_traffic_peak
+  - visit_to_flight_ratio

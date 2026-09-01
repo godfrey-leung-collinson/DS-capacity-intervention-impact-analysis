@@ -256,6 +256,48 @@ def compute_visit_metrics(
     }
 
 
+def _airport_forward_traffic(
+    flights: pd.DataFrame,
+    period: Period,
+    settings: MetricSettings,
+    *,
+    airport_code: str,
+) -> pd.Series:
+    """Return forward-window departure counts for an airport and period."""
+    _require_columns(
+        flights,
+        {"flight_interval", "airport_code", "departure_flight_count"},
+        "flights",
+    )
+    code = airport_code.strip().upper()
+    work = flights.copy()
+    work["airport_code"] = work["airport_code"].astype(str).str.strip().str.upper()
+    work = work[
+        work["airport_code"].eq(code)
+        & _in_period(work["flight_interval"], period)
+    ].copy()
+    if work.empty:
+        return pd.Series(dtype=float)
+
+    work["flight_interval"] = pd.to_datetime(work["flight_interval"])
+    work["departure_flight_count"] = pd.to_numeric(
+        work["departure_flight_count"], errors="coerce"
+    ).fillna(0)
+    counts = work.groupby("flight_interval")["departure_flight_count"].sum()
+    full_index = pd.date_range(
+        period.start,
+        period.end,
+        freq=f"{settings.slot_minutes}min",
+        inclusive="left",
+    )
+    counts = counts.reindex(full_index, fill_value=0)
+    forward_slots = max(
+        1,
+        math.ceil(settings.forward_traffic_hours * 60 / settings.slot_minutes),
+    )
+    return counts.iloc[::-1].rolling(forward_slots, min_periods=1).sum().iloc[::-1]
+
+
 def compute_airport_traffic_peak(
     flights: pd.DataFrame,
     period: Period,
@@ -282,39 +324,75 @@ def compute_airport_traffic_peak(
     float
         Peak forward departure count, or ``NaN`` when no flight data exist.
     """
-    _require_columns(
+    forward = _airport_forward_traffic(
         flights,
-        {"flight_interval", "airport_code", "departure_flight_count"},
-        "flights",
+        period,
+        settings,
+        airport_code=airport_code,
     )
-    code = airport_code.strip().upper()
-    work = flights.copy()
-    work["airport_code"] = work["airport_code"].astype(str).str.strip().str.upper()
-    work = work[
-        work["airport_code"].eq(code)
-        & _in_period(work["flight_interval"], period)
-    ].copy()
-    if work.empty:
+    if forward.empty:
+        return np.nan
+    return float(forward.max())
+
+
+def compute_airport_traffic_average(
+    flights: pd.DataFrame,
+    period: Period,
+    settings: MetricSettings,
+    *,
+    airport_code: str,
+) -> float:
+    """Compute mean forward departures in the configured traffic window."""
+    forward = _airport_forward_traffic(
+        flights,
+        period,
+        settings,
+        airport_code=airport_code,
+    )
+    if forward.empty:
+        return np.nan
+    return float(forward.mean())
+
+
+def compute_visit_to_flight_ratio(
+    visits: pd.DataFrame,
+    flights: pd.DataFrame,
+    period: Period,
+    settings: MetricSettings,
+    *,
+    outlet_code: str,
+    airport_code: str,
+    number_of_seats: float | None = None,
+) -> float:
+    """
+    Compute the period visit-to-flight ratio.
+
+    For each slot, forward departures in the configured window are matched to
+    outlet visit totals. The period ratio is total visits divided by the sum of
+    those forward departure counts across the period.
+    """
+    slot_frame = build_outlet_slot_frame(
+        visits,
+        period,
+        settings,
+        outlet_code=outlet_code,
+        number_of_seats=number_of_seats,
+    )
+    forward = _airport_forward_traffic(
+        flights,
+        period,
+        settings,
+        airport_code=airport_code,
+    )
+    if slot_frame.empty or forward.empty:
         return np.nan
 
-    work["flight_interval"] = pd.to_datetime(work["flight_interval"])
-    work["departure_flight_count"] = pd.to_numeric(
-        work["departure_flight_count"], errors="coerce"
-    ).fillna(0)
-    counts = work.groupby("flight_interval")["departure_flight_count"].sum()
-    full_index = pd.date_range(
-        period.start,
-        period.end,
-        freq=f"{settings.slot_minutes}min",
-        inclusive="left",
-    )
-    counts = counts.reindex(full_index, fill_value=0)
-    forward_slots = max(
-        1,
-        math.ceil(settings.forward_traffic_hours * 60 / settings.slot_minutes),
-    )
-    forward = counts.iloc[::-1].rolling(forward_slots, min_periods=1).sum().iloc[::-1]
-    return float(forward.max())
+    visits_by_slot = slot_frame.set_index("visit_interval")["total_visits"]
+    forward_by_slot = forward.reindex(visits_by_slot.index, fill_value=0)
+    total_forward = float(forward_by_slot.sum())
+    if total_forward <= 0:
+        return np.nan
+    return float(visits_by_slot.sum() / total_forward)
 
 
 def compute_traffic_threshold(

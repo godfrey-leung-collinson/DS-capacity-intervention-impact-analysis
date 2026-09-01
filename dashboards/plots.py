@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
@@ -26,6 +27,12 @@ QUADRANT_BG: dict[str, str] = {
 }
 
 
+def _impact_series(impact: pd.DataFrame, column: str) -> pd.Series:
+    if column in impact.columns:
+        return pd.to_numeric(impact[column], errors="coerce")
+    return pd.Series(np.nan, index=impact.index, dtype=float)
+
+
 def pre_post_grouped_bar(impact: pd.DataFrame, metric: str) -> go.Figure:
     """
     Build grouped pre/post bars for one metric across outlets.
@@ -48,7 +55,7 @@ def pre_post_grouped_bar(impact: pd.DataFrame, metric: str) -> go.Figure:
         go.Bar(
             name="Pre",
             x=labels,
-            y=pd.to_numeric(impact[f"pre_{metric}"], errors="coerce"),
+            y=_impact_series(impact, f"pre_{metric}"),
             marker_color=COLORS["pre"],
         )
     )
@@ -56,7 +63,7 @@ def pre_post_grouped_bar(impact: pd.DataFrame, metric: str) -> go.Figure:
         go.Bar(
             name="Post",
             x=labels,
-            y=pd.to_numeric(impact[f"post_{metric}"], errors="coerce"),
+            y=_impact_series(impact, f"post_{metric}"),
             marker_color=COLORS["post"],
         )
     )
@@ -72,7 +79,9 @@ def pre_post_grouped_bar(impact: pd.DataFrame, metric: str) -> go.Figure:
 
     if ("utilisation" in metric) or ("market_share" in metric):
         fig.layout.yaxis.tickformat = ',.0%'
-    
+    elif metric == "visit_to_flight_ratio":
+        fig.layout.yaxis.tickformat = ",.3f"
+
     return fig
 
 
@@ -92,13 +101,18 @@ def delta_bar_chart(impact: pd.DataFrame, metric: str) -> go.Figure:
     plotly.graph_objects.Figure
         Horizontal bar chart of absolute changes.
     """
-    work = impact[["outlet_code", f"{metric}_delta"]].copy()
-    work["delta"] = pd.to_numeric(work[f"{metric}_delta"], errors="coerce")
+    delta_col = f"{metric}_delta"
+    if delta_col not in impact.columns:
+        return go.Figure()
+
+    work = impact[["outlet_code"]].copy()
+    work["delta"] = _impact_series(impact, delta_col)
     work = work.dropna(subset=["delta"]).sort_values("delta")
     if work.empty:
         return go.Figure()
 
     is_percent = ("utilisation" in metric) or ("market_share" in metric)
+    is_ratio = metric == "visit_to_flight_ratio"
     plot_values = work["delta"] * 100.0 if is_percent else work["delta"]
     colors = [
         COLORS["positive"] if value >= 0 else COLORS["negative"]
@@ -106,6 +120,8 @@ def delta_bar_chart(impact: pd.DataFrame, metric: str) -> go.Figure:
     ]
     if is_percent:
         text_labels = plot_values.map(lambda v: f"{v:+.1f}%")
+    elif is_ratio:
+        text_labels = plot_values.map(lambda v: f"{v:+.3f}")
     else:
         text_labels = plot_values.map(
             lambda v: f"{v:+.2f}" if abs(v) < 1 else f"{v:+,.0f}"
@@ -123,7 +139,13 @@ def delta_bar_chart(impact: pd.DataFrame, metric: str) -> go.Figure:
     )
     fig.update_layout(
         title=f"{metric_label(metric)} change (post − pre)",
-        xaxis_title="Change (percentage points)" if is_percent else "Change",
+        xaxis_title=(
+            "Change (percentage points)"
+            if is_percent
+            else "Change (ratio points)"
+            if is_ratio
+            else "Change"
+        ),
         yaxis_title="Outlet",
         height=max(320, 48 * len(work) + 80),
         margin=dict(t=60, l=80, r=40),
@@ -131,6 +153,8 @@ def delta_bar_chart(impact: pd.DataFrame, metric: str) -> go.Figure:
     fig.update_xaxes(zeroline=True, zerolinecolor="#64748b", zerolinewidth=1.5)
     if is_percent:
         fig.update_xaxes(ticksuffix="%")
+    elif is_ratio:
+        fig.update_xaxes(tickformat=",.3f")
 
     return fig
 
@@ -307,8 +331,11 @@ def _quadrant_background_shapes(
 def quadrant_transition_chart(
     impact: pd.DataFrame,
     *,
+    aggregation: str = "peak",
     high_utilisation_threshold: float = 0.53,
     high_traffic_threshold: float | None = None,
+    threshold_percentile: float | None = None,
+    threshold_reference: pd.DataFrame | None = None,
 ) -> go.Figure:
     """
     Build a quadrant scatter showing pre/post lounge movement.
@@ -317,10 +344,18 @@ def quadrant_transition_chart(
     ----------
     impact : pandas.DataFrame
         Paired intervention impact table.
+    aggregation : {"peak", "average"}, default "peak"
+        Summary statistic used for both utilisation and airport traffic.
     high_utilisation_threshold : float, default 0.53
         Utilisation threshold for quadrant backgrounds.
     high_traffic_threshold : float or None, optional
         Traffic threshold for quadrant backgrounds.
+    threshold_percentile : float or None, optional
+        When provided, derive both thresholds from the selected pre-period
+        measures at this percentile.
+    threshold_reference : pandas.DataFrame or None, optional
+        Unfiltered impact data used to keep percentile thresholds stable when
+        the displayed outlets are filtered.
 
     Returns
     -------
@@ -331,18 +366,89 @@ def quadrant_transition_chart(
     if impact.empty:
         return fig
 
+    if aggregation not in {"peak", "average"}:
+        raise ValueError("aggregation must be 'peak' or 'average'")
+
     work = impact.copy()
     work["outlet_code"] = work["outlet_code"].astype(str)
-    work["pre_x"] = pd.to_numeric(work["pre_airport_traffic_peak"], errors="coerce")
-    work["post_x"] = pd.to_numeric(work["post_airport_traffic_peak"], errors="coerce")
-    work["pre_y"] = 100.0 * pd.to_numeric(work["pre_peak_pp_utilisation_rate"], errors="coerce")
-    work["post_y"] = 100.0 * pd.to_numeric(work["post_peak_pp_utilisation_rate"], errors="coerce")
+    traffic_metric = f"airport_traffic_{aggregation}"
+    utilisation_metric = f"{aggregation}_pp_utilisation_rate"
+    required = [
+        f"pre_{traffic_metric}",
+        f"post_{traffic_metric}",
+        f"pre_{utilisation_metric}",
+        f"post_{utilisation_metric}",
+    ]
+    missing = [column for column in required if column not in work.columns]
+    if missing:
+        fig.add_annotation(
+            text=(
+                "Average traffic data is not present in these saved results. "
+                "Refresh the analysis or regenerate the CSV outputs."
+            ),
+            showarrow=False,
+        )
+        fig.update_layout(height=460)
+        return fig
+
+    work["pre_x"] = pd.to_numeric(work[f"pre_{traffic_metric}"], errors="coerce")
+    work["post_x"] = pd.to_numeric(work[f"post_{traffic_metric}"], errors="coerce")
+    work["pre_y"] = 100.0 * pd.to_numeric(
+        work[f"pre_{utilisation_metric}"], errors="coerce"
+    )
+    work["post_y"] = 100.0 * pd.to_numeric(
+        work[f"post_{utilisation_metric}"], errors="coerce"
+    )
     work = work.dropna(subset=["pre_x", "post_x", "pre_y", "post_y"])
     if work.empty:
         return fig
 
-    traffic_threshold = _resolve_traffic_threshold(work, high_traffic_threshold)
-    util_threshold_pct = 100.0 * high_utilisation_threshold
+    if threshold_percentile is None:
+        traffic_threshold = _resolve_traffic_threshold(work, high_traffic_threshold)
+        util_threshold_pct = 100.0 * high_utilisation_threshold
+    else:
+        if not 0 < threshold_percentile < 100:
+            raise ValueError("threshold_percentile must be between 0 and 100")
+        reference = impact if threshold_reference is None else threshold_reference
+        reference_x = pd.to_numeric(
+            reference[f"pre_{traffic_metric}"], errors="coerce"
+        ).dropna()
+        reference_y = (
+            100.0
+            * pd.to_numeric(
+                reference[f"pre_{utilisation_metric}"], errors="coerce"
+            ).dropna()
+        )
+        traffic_threshold = float(reference_x.quantile(threshold_percentile / 100))
+        util_threshold_pct = float(reference_y.quantile(threshold_percentile / 100))
+
+    def quadrant_label(utilisation: pd.Series, traffic: pd.Series) -> pd.Series:
+        high_util = utilisation.ge(util_threshold_pct)
+        high_traffic = traffic.ge(traffic_threshold)
+        return pd.Series(
+            [
+                (
+                    "Capacity risk"
+                    if util and air
+                    else "Usage anomaly"
+                    if util
+                    else "Capacity/Opportunity gap"
+                    if air
+                    else "Low priority"
+                )
+                for util, air in zip(high_util, high_traffic)
+            ],
+            index=work.index,
+        )
+
+    work["display_pre_quadrant"] = quadrant_label(work["pre_y"], work["pre_x"])
+    work["display_post_quadrant"] = quadrant_label(work["post_y"], work["post_x"])
+    work["display_transition"] = (
+        work["display_pre_quadrant"] + " -> " + work["display_post_quadrant"]
+    )
+    work["display_quadrant_changed"] = work["display_pre_quadrant"].ne(
+        work["display_post_quadrant"]
+    )
 
     x_values = pd.concat([work["pre_x"], work["post_x"]])
     y_values = pd.concat([work["pre_y"], work["post_y"]])
@@ -354,9 +460,9 @@ def quadrant_transition_chart(
 
     hover_cols = [
         "outlet_code",
-        "pre_quadrant_label",
-        "post_quadrant_label",
-        "quadrant_transition",
+        "display_pre_quadrant",
+        "display_post_quadrant",
+        "display_transition",
     ]
     for column in hover_cols:
         if column not in work.columns:
@@ -407,7 +513,7 @@ def quadrant_transition_chart(
 
     annotations: list[dict] = []
     for _, row in work.iterrows():
-        changed = bool(row.get("quadrant_changed", False))
+        changed = bool(row["display_quadrant_changed"])
         annotations.append(
             dict(
                 x=float(row["post_x"]),
@@ -427,14 +533,15 @@ def quadrant_transition_chart(
             )
         )
 
-    n_changed = int(work.get("quadrant_changed", pd.Series(dtype=bool)).fillna(False).sum())
+    n_changed = int(work["display_quadrant_changed"].sum())
+    aggregation_label = aggregation.capitalize()
     fig.update_layout(
         title=(
-            "Quadrant movement: PP utilisation vs airport traffic "
+            f"Quadrant movement ({aggregation}): PP utilisation vs airport traffic "
             f"({len(work)} lounges, {n_changed} quadrant change(s))"
         ),
-        xaxis_title="Airport traffic index (peak departures, next 3h)",
-        yaxis_title="Peak PP utilisation rate",
+        xaxis_title=f"{aggregation_label} airport traffic index (departures, next 3h)",
+        yaxis_title=f"{aggregation_label} PP utilisation rate",
         height=max(460, 56 * len(work) + 180),
         margin=dict(t=70, l=60, r=30, b=60),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
